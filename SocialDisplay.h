@@ -1,7 +1,13 @@
 #ifndef SocialDisplay_h
 #define SocialDisplay_h
 
+#include <FS.h> 
+
 #include <ESP8266WiFi.h>
+#include <WiFiManager.h>
+#include <DNSServer.h>
+#include <ESP8266WebServer.h>
+
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <MD_MAX72xx.h>
@@ -25,7 +31,7 @@
 #define NUM_DIGITS 5
 
 //Update times
-#define SOCIAL_CYCLE_TIME 10000
+#define SOCIAL_CYCLE_TIME 60000
 
 struct digitData
 {
@@ -59,8 +65,12 @@ public:
 
 private:
   void MqttCallback(char* topic, byte* payload, unsigned int length);
-  void updateDisplay(uint16_t numDigits, struct digitData *d);
-  boolean displayValue();
+  void UpdateDisplay(uint16_t numDigits, struct digitData *d);
+  boolean DisplayValue();
+
+  void ReadMqttConfig();
+  void SaveMqttConfig();
+  static void SaveConfig();
 
 private:
   WiFiClient espClient;
@@ -69,10 +79,9 @@ private:
   //Estimated worst case for 10 social media.
   StaticJsonDocument<1923> jsonDoc;
 
-  char* ssid;
-  char* password;
-  char* mqtt_server;
-  char* subTopic;
+  char mqtt_server[64];
+  char mqtt_port[6];
+  char mqtt_topic[64];
 
   SocialStruct socialArray[MAX_SOCIAL];
   uint8_t numSocial;
@@ -82,6 +91,8 @@ private:
   MD_MAX72XX* mxLED;
   digitData digit[NUM_DIGITS];
   uint8_t displayState;
+
+  static bool saveConfig;
 }; 
 
 #endif

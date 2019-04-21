@@ -1,67 +1,67 @@
 #include "SocialDisplay.h"
 #include "FontData.h"
 
-//Twitch 63,33,225,77,33,45,33,63
-//Twitter 143,222,252,124,126,63,30,4
-//Instagram 126,129,153,165,165,153,131,126
+
+bool SocialDisplay::saveConfig = false;
 
 SocialDisplay::SocialDisplay()
 {
-	ssid = "YOUR WIFI SSID";
-	password = "YOUR WIFI PASSWORD";
-	mqtt_server = "broker.mqtt-dashboard.com"; //recommend changing
-  subTopic = "USER TOPIC HERE";
-
   numSocial = 0;
   currentSocial = 0;
   lastUpdate = 0;
   
   mxLED = NULL;
   displayState = ST_INIT;
+
+  saveConfig = false;
 }
 
 void SocialDisplay::setup()
 {
-  //Setup Wifi
-  Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-  
-  WiFi.begin(ssid, password);
-  
-  while (WiFi.status() != WL_CONNECTED) {
-  delay(500);
-  Serial.print(".");
-  }
-  
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
-
-  //Setup Mqtt
-  client.setClient(espClient);
-  client.setServer(mqtt_server, 1883);
-  client.setCallback([this] (char* topic, byte* payload, unsigned int length) {this->MqttCallback(topic, payload, length);});
-
   //Setup MX LED display
   mxLED = new MD_MAX72XX(HARDWARE_TYPE, CS_PIN, MAX_DEVICES);
   mxLED->begin();
   mxLED->setFont(fourWidthFont);
   mxLED->control(MD_MAX72XX::INTENSITY, 1);
+
+  ReadMqttConfig();
+
+  //Connect to wifi, set up AP if no good credentials
+  WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, 64);
+  WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, 6);
+  WiFiManagerParameter custom_mqtt_topic("topic", "mqtt topic", mqtt_topic, 64);
+
+  WiFiManager wifiManager;
+  //wifiManager.setSaveConfigCallback();
+
+  wifiManager.addParameter(&custom_mqtt_server);
+  wifiManager.addParameter(&custom_mqtt_port);
+  wifiManager.addParameter(&custom_mqtt_topic);
+  
+  wifiManager.autoConnect("Social-Display");
+  //wifiManager.startConfigPortal();
+
+  strcpy(mqtt_server, custom_mqtt_server.getValue());
+  strcpy(mqtt_port, custom_mqtt_port.getValue());
+  strcpy(mqtt_topic, custom_mqtt_topic.getValue());
+
+  //Setup Mqtt
+  client.setClient(espClient);
+  client.setServer(mqtt_server, atoi(mqtt_port));
+  client.setCallback(std::bind(&SocialDisplay::MqttCallback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 }
 
 void SocialDisplay::Reconnect()
 {
     Serial.print("Attempting MQTT connection...");
     // Create a random client ID
-    String clientId = "SocialDisplay-" + String(subTopic);
+    String clientId = "SocialDisplay-" + String(mqtt_topic);
     // Attempt to connect
     if (client.connect(clientId.c_str())) 
     {
       Serial.println("connected");
       //subscribe
-      client.subscribe(subTopic);
+      client.subscribe(mqtt_topic);
     } 
     else 
     {
@@ -89,7 +89,10 @@ void SocialDisplay::loop()
     }
     lastUpdate = millis();
   }
-  displayValue();
+  DisplayValue();
+
+  if(saveConfig)
+    SaveMqttConfig();
 }
 
 void SocialDisplay::MqttCallback(char* topic, byte* payload, unsigned int length)
@@ -112,7 +115,7 @@ void SocialDisplay::MqttCallback(char* topic, byte* payload, unsigned int length
   }
 }
 
-void SocialDisplay::updateDisplay(uint16_t numDigits, struct digitData *d)
+void SocialDisplay::UpdateDisplay(uint16_t numDigits, struct digitData *d)
 {
   uint8_t   curCol = 0;
 
@@ -138,7 +141,7 @@ void SocialDisplay::updateDisplay(uint16_t numDigits, struct digitData *d)
   mxLED->control(MD_MAX72XX::UPDATE, MD_MAX72XX::ON);
 }
 
-boolean SocialDisplay::displayValue()
+boolean SocialDisplay::DisplayValue()
 // Display the required value on the LED matrix and return true if an animation is current
 // Finite state machine will ignore new values while animations are underway.
 // Needs to be called repeatedly to ensure animations are completed smoothly.
@@ -166,7 +169,7 @@ boolean SocialDisplay::displayValue()
         value = value / 10;
       }
       
-      updateDisplay(NUM_DIGITS, digit);
+      UpdateDisplay(NUM_DIGITS, digit);
 
       // Now we wait for a change
       displayState = ST_WAIT;
@@ -242,7 +245,7 @@ boolean SocialDisplay::displayValue()
         }
       }
 
-      updateDisplay(NUM_DIGITS, digit);  // show new display
+      UpdateDisplay(NUM_DIGITS, digit);  // show new display
 
       // are we done animating?
       {
@@ -263,3 +266,70 @@ boolean SocialDisplay::displayValue()
 
   return(displayState == ST_WAIT);   // animation has ended
 }
+
+void SocialDisplay::ReadMqttConfig()
+{
+  if (SPIFFS.begin()) 
+  {
+    Serial.println("mounted file system");
+    if (SPIFFS.exists("/config.json")) 
+    {
+      //file exists, reading and loading
+      Serial.println("reading config file");
+      File configFile = SPIFFS.open("/config.json", "r");
+      if (configFile) 
+      {
+        Serial.println("opened config file");
+        size_t size = configFile.size();
+        // Allocate a buffer to store contents of the file.
+        std::unique_ptr<char[]> buf(new char[size]);
+
+        configFile.readBytes(buf.get(), size);
+        StaticJsonDocument<218> json;
+        auto error = deserializeJson(json, buf.get());
+        if (!error) 
+        {
+          Serial.println("\nparsed json");
+
+          strcpy(mqtt_server, json["mqtt_server"]);
+          strcpy(mqtt_port, json["mqtt_port"]);
+          strcpy(mqtt_topic, json["mqtt_topic"]);
+
+        } 
+        else 
+        {
+          Serial.println("failed to load json config");
+        }
+        configFile.close();
+      }
+    }
+  } 
+  else 
+  {
+    Serial.println("failed to mount FS");
+  }
+}
+
+void SocialDisplay::SaveMqttConfig()
+{
+  StaticJsonDocument<218> json;
+  json["mqtt_server"] = mqtt_server;
+  json["mqtt_port"] = mqtt_port;
+  json["mqtt_topic"] = mqtt_topic;
+
+  File configFile = SPIFFS.open("/config.json", "w");
+  if (!configFile) 
+  {
+    Serial.println("failed to open config file for writing");
+  }
+  serializeJson(json, configFile);
+  configFile.close();
+
+  saveConfig = false;
+}
+
+void SocialDisplay::SaveConfig()
+{
+  saveConfig = true;
+}
+
